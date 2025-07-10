@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>8 Ball Pool - Scratch Edition</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+        canvas {
+            display: block;
+            background-color: #0d3b23; /* Fallback in case of slow rendering */
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        #turn-indicator {
+            background-color: rgba(0, 0, 0, 0.75);
+            padding: 8px 25px;
+            border-radius: 50px;
+            color: white;
+            font-size: 18px;
+            font-weight: 600;
+            text-shadow: 0 0 5px black;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+        .ball-display-container {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+        }
+        .ball-display {
+            display: flex;
+            gap: -8px; /* Overlap the balls slightly */
+        }
+        .ball-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.8);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="ui-overlay">
+            <div id="turn-indicator">Initializing...</div>
+            <div class="ball-display-container">
+                <div id="player1-balls" class="ball-display"></div>
+                <div id="player2-balls" class="ball-display"></div>
+            </div>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+    // =========================================================================
+    //  8 Ball Pool - From Scratch Edition | World's Greatest Game Developer
+    //  No libraries. No frameworks. No assets. Pure JavaScript mastery.
+    // =========================================================================
+
+    // I. CORE SETUP & CONSTANTS
+    // =========================================================================
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const TABLE_WIDTH = 1000;
+    const TABLE_HEIGHT = 500;
+    canvas.width = TABLE_WIDTH;
+    canvas.height = TABLE_HEIGHT;
+
+    // Physics constants, tuned for a realistic feel
+    const FRICTION = 0.985;
+    const MIN_VELOCITY = 0.05;
+    const CUSHION_RESTITUTION = 0.8;
+    const BALL_RESTITUTION = 0.9;
+    
+    // Game object constants
+    const BALL_RADIUS = 10;
+    const BALL_DIAMETER = BALL_RADIUS * 2;
+    const POCKET_RADIUS = 20;
+    const POCKET_DETECTION_RADIUS = 15; // Smaller radius for detection to feel right
+
+    const POCKETS = [
+        { x: 20, y: 20 }, { x: TABLE_WIDTH / 2, y: 15 }, { x: TABLE_WIDTH - 20, y: 20 },
+        { x: 20, y: TABLE_HEIGHT - 20 }, { x: TABLE_WIDTH / 2, y: TABLE_HEIGHT - 15 }, { x: TABLE_WIDTH - 20, y: TABLE_HEIGHT - 20 }
+    ];
+
+    const BALL_COLORS = {
+        0: '#FFFFFF', 1: '#FFD700', 2: '#0000FF', 3: '#FF0000', 4: '#800080', 5: '#FFA500', 6: '#008000', 7: '#A52A2A', 8: '#1C1C1C',
+        9: '#FFD700', 10: '#0000FF', 11: '#FF0000', 12: '#800080', 13: '#FFA500', 14: '#008000', 15: '#A52A2A'
+    };
+    
+    // Game State
+    const GameState = { AIMING: 'AIMING', SIMULATING: 'SIMULATING', GAME_OVER: 'GAME_OVER' };
+    let gameState = GameState.SIMULATING; // Start with simulation to let balls settle
+    let balls = [];
+    let currentPlayer = 1;
+    let ballTypesAssigned = false;
+    let playerBallTypes = { 1: null, 2: null };
+    let turnHadLegalHit = false;
+    let firstBallHit = null;
+
+    // Input state
+    let mouse = { x: 0, y: 0, down: false };
+    
+    
+    // II. VECTOR MATH LIBRARY
+    // The foundation of all physics. Coded from first principles.
+    // =========================================================================
+    class Vector {
+        constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+        add(v) { return new Vector(this.x + v.x, this.y + v.y); }
+        subtract(v) { return new Vector(this.x - v.x, this.y - v.y); }
+        multiply(s) { return new Vector(this.x * s, this.y * s); }
+        magnitude() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+        normalize() { const mag = this.magnitude(); return mag > 0 ? this.multiply(1 / mag) : new Vector(0, 0); }
+        dot(v) { return this.x * v.x + this.y * v.y; }
+    }
+
+
+    // III. THE BALL OBJECT
+    // Contains state, drawing logic, and basic physics properties.
+    // =========================================================================
+    class Ball {
+        constructor(x, y, number) {
+            this.pos = new Vector(x, y);
+            this.vel = new Vector(0, 0);
+            this.number = number;
+            this.radius = BALL_RADIUS;
+            this.mass = 1;
+            this.isSunk = false;
+        }
+
+        getType() {
+            if (this.number === 0) return 'cue';
+            if (this.number === 8) return 'eight';
+            return this.number < 8 ? 'solid' : 'stripe';
+        }
+
+        draw(ctx) {
+            if (this.isSunk) return;
+
+            // Base color with lighting gradient
+            const gradient = ctx.createRadialGradient(this.pos.x - 3, this.pos.y - 3, 1, this.pos.x, this.pos.y, this.radius);
+            gradient.addColorStop(0, '#ffffff');
+            gradient.addColorStop(0.5, BALL_COLORS[this.number]);
+            gradient.addColorStop(1, '#000000');
+            
+            ctx.beginPath();
+            ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = BALL_COLORS[this.number];
+            ctx.fill();
+
+            // Stripe
+            if (this.getType() === 'stripe') {
+                ctx.beginPath();
+                ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(this.pos.x, this.pos.y, this.radius - 2, 0, Math.PI * 2);
+                ctx.fillStyle = BALL_COLORS[this.number];
+                ctx.fill();
+            }
+
+            // Number
+            if (this.number > 0) {
+                ctx.beginPath();
+                ctx.arc(this.pos.x, this.pos.y, this.radius / 1.8, 0, Math.PI * 2);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fill();
+                ctx.fillStyle = '#000000';
+                ctx.font = 'bold 10px Segoe UI';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.number, this.pos.x, this.pos.y);
+            }
+
+            // Specular highlight
+            ctx.beginPath();
+            ctx.arc(this.pos.x - this.radius / 3, this.pos.y - this.radius / 3, this.radius / 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.fill();
+        }
+
+        update() {
+            this.pos = this.pos.add(this.vel);
+            this.vel = this.vel.multiply(FRICTION);
+            if (this.vel.magnitude() < MIN_VELOCITY) {
+                this.vel = new Vector(0, 0);
+            }
+        }
+    }
+
+
+    // IV. THE HAND-CRAFTED PHYSICS ENGINE
+    // =========================================================================
+    const PhysicsEngine = {
+        update() {
+            let ballsMoving = false;
+            for (let i = 0; i < balls.length; i++) {
+                const ball = balls[i];
+                if (ball.isSunk) continue;
+
+                ball.update();
+
+                if (ball.vel.magnitude() > 0) {
+                    ballsMoving = true;
+                }
+
+                // Cushion collisions
+                if (ball.pos.x - ball.radius < 25 || ball.pos.x + ball.radius > TABLE_WIDTH - 25) {
+                    ball.vel.x *= -CUSHION_RESTITUTION;
+                    ball.pos.x = Math.max(ball.pos.x, ball.radius + 25);
+                    ball.pos.x = Math.min(ball.pos.x, TABLE_WIDTH - ball.radius - 25);
+                }
+                if (ball.pos.y - ball.radius < 25 || ball.pos.y + ball.radius > TABLE_HEIGHT - 25) {
+                    ball.vel.y *= -CUSHION_RESTITUTION;
+                    ball.pos.y = Math.max(ball.pos.y, ball.radius + 25);
+                    ball.pos.y = Math.min(ball.pos.y, TABLE_HEIGHT - ball.radius - 25);
+                }
+
+                // Ball-ball collisions
+                for (let j = i + 1; j < balls.length; j++) {
+                    const otherBall = balls[j];
+                    if (otherBall.isSunk) continue;
+
+                    const delta = ball.pos.subtract(otherBall.pos);
+                    const dist = delta.magnitude();
+
+                    if (dist < BALL_DIAMETER) {
+                        if (firstBallHit === null && (ball.number === 0 || otherBall.number === 0)) {
+                            firstBallHit = (ball.number === 0) ? otherBall : ball;
+                        }
+
+                        // Resolve overlap
+                        const overlap = (BALL_DIAMETER - dist) / dist;
+                        const moveA = delta.multiply(overlap * 0.5);
+                        ball.pos = ball.pos.add(moveA);
+                        otherBall.pos = otherBall.pos.subtract(moveA);
+                        
+                        // Collision response
+                        const normal = delta.normalize();
+                        const tangent = new Vector(-normal.y, normal.x);
+                        
+                        const v1n = ball.vel.dot(normal);
+                        const v1t = ball.vel.dot(tangent);
+                        const v2n = otherBall.vel.dot(normal);
+                        const v2t = otherBall.vel.dot(tangent);
+
+                        const v1n_final = (v1n * (ball.mass - otherBall.mass) + 2 * otherBall.mass * v2n) / (ball.mass + otherBall.mass);
+                        const v2n_final = (v2n * (otherBall.mass - ball.mass) + 2 * ball.mass * v1n) / (ball.mass + otherBall.mass);
+
+                        const v1n_vec = normal.multiply(v1n_final * BALL_RESTITUTION);
+                        const v2n_vec = normal.multiply(v2n_final * BALL_RESTITUTION);
+                        const v1t_vec = tangent.multiply(v1t);
+                        const v2t_vec = tangent.multiply(v2t);
+
+                        ball.vel = v1n_vec.add(v1t_vec);
+                        otherBall.vel = v2n_vec.add(v2t_vec);
+                    }
+                }
+                
+                // Pocketing
+                POCKETS.forEach(pocket => {
+                    if (ball.pos.subtract(new Vector(pocket.x, pocket.y)).magnitude() < POCKET_DETECTION_RADIUS) {
+                        ball.isSunk = true;
+                        // Special handling for cue ball will be in game logic
+                    }
+                });
+            }
+
+            if (!ballsMoving && gameState === GameState.SIMULATING) {
+                Game.endTurn();
+            }
+        }
+    };
+
+
+    // V. THE GAME LOGIC & STATE MACHINE
+    // =========================================================================
+    const Game = {
+        init() {
+            this.setupTable();
+            this.updateUI();
+            this.mainLoop();
+        },
+
+        setupTable() {
+            balls = [];
+            // Cue ball
+            balls.push(new Ball(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2, 0));
+
+            // Racked balls
+            const rackStartX = TABLE_WIDTH * 0.75;
+            const rackStartY = TABLE_HEIGHT / 2;
+            const ballNumbers = [1, 9, 2, 8, 10, 3, 11, 12, 4, 13, 5, 14, 15, 6, 7];
+            let currentIndex = 0;
+            for (let row = 0; row < 5; row++) {
+                for (let col = 0; col <= row; col++) {
+                    const x = rackStartX + row * (BALL_DIAMETER * 0.88);
+                    const y = rackStartY + col * BALL_DIAMETER - row * BALL_RADIUS;
+                    balls.push(new Ball(x, y, ballNumbers[currentIndex++]));
+                }
+            }
+            gameState = GameState.AIMING;
+        },
+        
+        shoot() {
+            const cueBall = balls[0];
+            const direction = new Vector(mouse.x, mouse.y).subtract(cueBall.pos).normalize().multiply(-1);
+            const power = Math.min(new Vector(mouse.x, mouse.y).subtract(cueBall.pos).magnitude(), 150) * 0.15;
+            
+            if (power > 0) {
+                cueBall.vel = direction.multiply(power);
+                gameState = GameState.SIMULATING;
+                turnHadLegalHit = false;
+                firstBallHit = null;
+            }
+        },
+        
+        endTurn() {
+            const sunkBallsThisTurn = balls.filter(b => b.isSunk && !b.wasSunkBefore);
+            let foul = false;
+            let playerContinues = false;
+
+            // 1. Check for cue ball sink (scratch)
+            if (balls[0].isSunk) {
+                foul = true;
+                this.resetCueBall();
+            }
+            
+            // 2. Check for illegal first hit
+            if (!firstBallHit) {
+                foul = true; // Hit no balls
+            } else if (ballTypesAssigned) {
+                const requiredType = playerBallTypes[currentPlayer];
+                if (firstBallHit.getType() !== requiredType && firstBallHit.getType() !== 'eight') {
+                    foul = true;
+                }
+                 if(firstBallHit.getType() === 'eight' && this.getPlayerBallsLeft(currentPlayer) > 0) {
+                    foul = true;
+                 }
+            }
+
+            // 3. Process sunk balls
+            if (sunkBallsThisTurn.length > 0) {
+                let legalPot = false;
+                sunkBallsThisTurn.forEach(ball => {
+                    if (ball.getType() === 'eight') {
+                        if (this.getPlayerBallsLeft(currentPlayer) > 0) {
+                            this.endGame(currentPlayer === 1 ? 2 : 1, "sunk the 8-ball early");
+                        } else {
+                            if (foul) {
+                                this.endGame(currentPlayer === 1 ? 2 : 1, "sunk the 8-ball on a foul");
+                            } else {
+                                this.endGame(currentPlayer, "legally sunk the 8-ball");
+                            }
+                        }
+                        return; // Game over, stop processing
+                    }
+                    
+                    if (!ballTypesAssigned) {
+                        ballTypesAssigned = true;
+                        playerBallTypes[currentPlayer] = ball.getType();
+                        playerBallTypes[currentPlayer === 1 ? 2 : 1] = ball.getType() === 'solid' ? 'stripe' : 'solid';
+                        legalPot = true;
+                    } else if (ball.getType() === playerBallTypes[currentPlayer]) {
+                        legalPot = true;
+                    }
+                });
+                
+                if (legalPot && !foul) {
+                    playerContinues = true;
+                }
+            }
+
+            if (foul) {
+                console.log(`Player ${currentPlayer} fouled.`);
+                this.resetCueBall(); // Ball in hand
+                // Optional: add visual indicator for ball-in-hand
+            }
+            
+            balls.forEach(b => b.wasSunkBefore = b.isSunk);
+
+            if (!playerContinues || foul) {
+                currentPlayer = currentPlayer === 1 ? 2 : 1;
+            }
+            
+            gameState = GameState.AIMING;
+            this.updateUI();
+        },
+        
+        getPlayerBallsLeft(player) {
+            if (!ballTypesAssigned) return 7;
+            const targetType = playerBallTypes[player];
+            return balls.filter(b => !b.isSunk && b.getType() === targetType).length;
+        },
+        
+        resetCueBall() {
+            balls[0].isSunk = false;
+            balls[0].vel = new Vector(0,0);
+            balls[0].pos = new Vector(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2);
+        },
+        
+        endGame(winner, reason) {
+            gameState = GameState.GAME_OVER;
+            const turnIndicator = document.getElementById('turn-indicator');
+            turnIndicator.textContent = `Player ${winner} wins! (${reason})`;
+        },
+
+        draw() {
+            // Clear and draw table
+            ctx.fillStyle = '#105a33';
+            ctx.fillRect(0, 0, TABLE_WIDTH, TABLE_HEIGHT);
+            
+            // Cushions
+            ctx.fillStyle = '#6B4F34';
+            ctx.fillRect(0, 0, TABLE_WIDTH, 25);
+            ctx.fillRect(0, TABLE_HEIGHT - 25, TABLE_WIDTH, 25);
+            ctx.fillRect(0, 0, 25, TABLE_HEIGHT);
+            ctx.fillRect(TABLE_WIDTH - 25, 0, 25, TABLE_HEIGHT);
+            
+            // Pockets
+            POCKETS.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, POCKET_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = '#000000';
+                ctx.fill();
+            });
+
+            // Balls
+            balls.forEach(ball => ball.draw(ctx));
+
+            // Aiming line
+            if (gameState === GameState.AIMING && mouse.down) {
+                const cueBall = balls[0];
+                ctx.beginPath();
+                ctx.moveTo(cueBall.pos.x, cueBall.pos.y);
+                ctx.lineTo(mouse.x, mouse.y);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        },
+
+        updateUI() {
+            const turnIndicator = document.getElementById('turn-indicator');
+            if (gameState === GameState.GAME_OVER) return;
+
+            let typeText = '(Break Shot)';
+            if (ballTypesAssigned) {
+                typeText = `(${playerBallTypes[currentPlayer] === 'solid' ? 'Solids' : 'Stripes'})`;
+            }
+            turnIndicator.textContent = `Player ${currentPlayer}'s Turn ${typeText}`;
+
+            // Sunk balls display
+            const p1Display = document.getElementById('player1-balls');
+            const p2Display = document.getElementById('player2-balls');
+            p1Display.innerHTML = '';
+            p2Display.innerHTML = '';
+            
+            balls.filter(b => b.isSunk && b.number > 0 && b.number < 8).forEach(b => {
+                const icon = document.createElement('div');
+                icon.className = 'ball-icon';
+                icon.style.backgroundColor = BALL_COLORS[b.number];
+                const targetDisplay = (playerBallTypes[1] === 'solid' ? p1Display : p2Display);
+                if(targetDisplay) targetDisplay.appendChild(icon);
+            });
+             balls.filter(b => b.isSunk && b.number > 8).forEach(b => {
+                const icon = document.createElement('div');
+                icon.className = 'ball-icon';
+                icon.style.backgroundColor = BALL_COLORS[b.number];
+                const targetDisplay = (playerBallTypes[1] === 'stripe' ? p1Display : p2Display);
+                 if(targetDisplay) targetDisplay.appendChild(icon);
+            });
+        },
+        
+        mainLoop() {
+            if (gameState === GameState.SIMULATING) {
+                PhysicsEngine.update();
+            }
+            Game.draw();
+            requestAnimationFrame(Game.mainLoop);
+        }
+    };
+
+    // VI. INPUT EVENT LISTENERS
+    // =========================================================================
+    canvas.addEventListener('mousemove', e => {
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = e.clientX - rect.left;
+        mouse.y = e.clientY - rect.top;
+    });
+
+    canvas.addEventListener('mousedown', e => {
+        if (gameState === GameState.AIMING) {
+            mouse.down = true;
+        }
+    });
+
+    canvas.addEventListener('mouseup', e => {
+        if (gameState === GameState.AIMING && mouse.down) {
+            mouse.down = false;
+            Game.shoot();
+        }
+    });
+
+    // VII. IGNITION
+    // =========================================================================
+    Game.init();
+
+    </script>
+</body>
+</html>
